@@ -2,54 +2,106 @@ import { fetchTranscript } from 'youtube-transcript-plus';
 import { CharacterTextSplitter } from "@langchain/textsplitters";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { TaskType } from "@google/generative-ai";
-import { MongoDBAtlasVectorSearch } from "@langchain/mongodb"
-import { MongoClient } from "mongodb";
 import dotenv from 'dotenv';
 dotenv.config({ path: '/home/shivam/ytchatbot/backend/.env' });
+import { CloudClient } from "chromadb";
+import { Chroma } from "@langchain/community/vectorstores/chroma";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { PromptTemplate } from "@langchain/core/prompts";
+import {
+  ChatPromptTemplate,
+  MessagesPlaceholder,
+} from "@langchain/core/prompts";
+import { StringOutputParser } from "@langchain/core/output_parsers"
 
+
+const client = new CloudClient({
+  apiKey: process.env.chroma,
+  tenant: process.env.tenant,
+  database: 'langchain',
+});
 
 const videoId = 'https://youtu.be/rWKwQ1I4xzc?si=rtEdEbwiEPxOBFm4';
-const transcript = await fetchTranscript(videoId,{lang:'en'});
-console.log('Transcript fetched successfully:');
+const transcript = await fetchTranscript(videoId, { lang: 'en' });
+    
 const fullText = transcript.map(item => item.text).join(' ');
-console.log(fullText);
+
 
 const textSplitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
 const chunks = await textSplitter.splitText(fullText);
-console.log(chunks);
+
 
 const embeddings = new GoogleGenerativeAIEmbeddings({
   apiKey: process.env.GOOGLE_API_KEY,
-  model: "models/text-embedding-004", // This is the latest model
-  taskType: TaskType.RETRIEVAL_DOCUMENT, // or e.g., TaskType.SEMANTIC_SIMILARITY
+  model: "models/text-embedding-004",
+  taskType: TaskType.RETRIEVAL_DOCUMENT,
 });
 
-const uri = process.env.MONGODB_ATLAS_URI;
-const dbName = process.env.MONGODB_ATLAS_DB_NAME;
-const collectionName = process.env.MONGODB_ATLAS_COLLECTION_NAME;
+const vectorStore = await Chroma.fromTexts(
+  chunks,
+  chunks.map((_, i) => ({ source: "youtube", chunkIndex: i })),
+  embeddings,
+  {
+    collectionName: "ytchatbot",
+    index: client as any, 
+  }
+);
+
+const retriever = vectorStore.asRetriever();
 
 
-const client = new MongoClient(uri);
-const collection = client
-  .db(dbName)
-  .collection(collectionName);
-
-
-const vectorStore = new MongoDBAtlasVectorSearch(embeddings, {
-  collection: collection,
-  indexName: "vector_index",
-  embeddingKey: "embedding",
+const llm = new ChatGoogleGenerativeAI({
+  model: "gemini-2.5-flash"
 });
 
-await client.connect();
+const question = "Explain complete summary of video in about 200 words";
 
-const documents = chunks.map((chunk, idx) => ({
-  pageContent: chunk,
-  metadata: { videoId, chunkIndex: idx }
-})) as any[];
 
-await vectorStore.addDocuments(documents as any);
+const retrievedDocs = await retriever.invoke(question);
 
-console.log("Embeddings stored in MongoDB successfully.");
 
-await client.close();
+const contextText = retrievedDocs.map(doc => doc.pageContent).join("\n\n");
+
+const promptTemplate = ChatPromptTemplate.fromMessages([
+  ["system",`You are a helpful assistant.
+      Answer ONLY from the provided transcript context.
+      If the context is insufficient, just say you don't know.`
+  ],
+  ["human", "Question: {question}\n\nContext:\n{context}"]
+]);
+
+
+const final_prompt = await promptTemplate.invoke({
+  context: contextText,
+  question
+});
+
+const parser= new StringOutputParser();
+const chain = llm.pipe(parser)
+const ans= await chain.invoke(final_prompt);
+console.log(ans);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
