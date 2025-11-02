@@ -13,6 +13,21 @@ import {
   MessagesPlaceholder,
 } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers"
+import { RunnableLambda, RunnableParallel, RunnablePassthrough,RunnableSequence } from '@langchain/core/runnables';
+import { Document } from "@langchain/core/documents";
+// Silence that specific Chroma warning
+const originalWarn = console.warn;
+console.warn = (...args) => {
+  if (
+    typeof args[0] === "string" &&
+    args[0].includes("undefined embedding function")
+  ) return; // skip this warning
+
+  originalWarn(...args);
+};
+
+
+
 
 
 const client = new CloudClient({
@@ -47,6 +62,8 @@ const vectorStore = await Chroma.fromTexts(
   }
 );
 
+const question = new RunnablePassthrough();
+
 const retriever = vectorStore.asRetriever();
 
 
@@ -54,13 +71,10 @@ const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash"
 });
 
-const question = "Explain complete summary of video in about 200 words";
 
-
-const retrievedDocs = await retriever.invoke(question);
-
-
-const contextText = retrievedDocs.map(doc => doc.pageContent).join("\n\n");
+const format_docs=(retrievedDocs :Document[])=>{
+  return retrievedDocs.map(doc => doc.pageContent).join("\n\n");
+}
 
 const promptTemplate = ChatPromptTemplate.fromMessages([
   ["system",`You are a helpful assistant.
@@ -71,23 +85,34 @@ const promptTemplate = ChatPromptTemplate.fromMessages([
 ]);
 
 
-const final_prompt = await promptTemplate.invoke({
-  context: contextText,
-  question
+const parser= new StringOutputParser()
+
+const chain1= RunnableSequence.from([
+  RunnableLambda.from((input: {question: string}) => input.question),
+  retriever,
+  RunnableLambda.from(format_docs)
+]);
+
+const parallel_chain= RunnableParallel.from({
+  context: chain1,
+  question: question,
+})
+
+const res= await parallel_chain.invoke({
+  question: "What is the main topic of the video?"
 });
 
-const parser= new StringOutputParser();
-const chain = llm.pipe(parser)
-const ans= await chain.invoke(final_prompt);
+const main_chain= RunnableSequence.from([
+  parallel_chain,
+  promptTemplate,
+  llm,
+  parser
+]);
+
+const ans= await main_chain.invoke({
+  question: "What is the main topic of the video?"
+});
 console.log(ans);
-
-
-
-
-
-
-
-
 
 
 
