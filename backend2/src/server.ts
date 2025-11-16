@@ -70,7 +70,12 @@ app.post('/ytchatbot',async(req,res)=>{
         // Extract video ID to create unique collection name
         const videoId = extractVideoId(videoUrl);
         const collectionName = `ytchatbot_${videoId}`;
-        console.log('Using collection name:', collectionName, 'for video:', videoUrl);
+        console.log('========================================');
+        console.log('Processing request for video:', videoUrl);
+        console.log('Extracted video ID:', videoId);
+        console.log('Using collection name:', collectionName);
+        console.log('Question:', question);
+        console.log('========================================');
 
         console.log('Fetching transcript for:', videoUrl);
         const transcript = await fetchTranscript(videoUrl, { lang: 'en' });
@@ -88,6 +93,27 @@ app.post('/ytchatbot',async(req,res)=>{
             database: 'langchain',
         });
 
+        // Delete existing collection if it exists to ensure fresh data
+        // This prevents mixing transcripts from different videos
+        try {
+            console.log('Checking if collection exists:', collectionName);
+            const collections = await client.listCollections();
+            const collectionExists = collections.some((col: any) => col.name === collectionName);
+            
+            if (collectionExists) {
+                console.log('Deleting existing collection to ensure fresh transcript:', collectionName);
+                await client.deleteCollection({ name: collectionName });
+                // Small delay to ensure deletion is complete
+                await new Promise(resolve => setTimeout(resolve, 500));
+                console.log('Collection deleted successfully, ready for fresh data');
+            } else {
+                console.log('Collection does not exist, will create new one');
+            }
+        } catch (deleteError: any) {
+            // If collection doesn't exist or delete fails, log but continue
+            console.log('Collection check/delete note:', deleteError?.message || 'Collection may not exist (this is okay)');
+        }
+
         const fullText = transcript.map(item => item.text).join(' ');
 
         console.log('Splitting text into chunks...');
@@ -101,8 +127,8 @@ app.post('/ytchatbot',async(req,res)=>{
             taskType: TaskType.RETRIEVAL_DOCUMENT,
         });
         
-        console.log('Creating vector store with unique collection:', collectionName);
-        // Use unique collection name per video to avoid mixing transcripts
+        console.log('Creating fresh vector store with collection:', collectionName);
+        // Create a fresh collection for this video
         const vectorStore = await Chroma.fromTexts(
             chunks,
             chunks.map((_, i) => ({ source: "youtube", chunkIndex: i, videoId: videoId })),
