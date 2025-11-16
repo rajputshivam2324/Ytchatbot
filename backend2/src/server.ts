@@ -67,79 +67,69 @@ app.post('/ytchatbot',async(req,res)=>{
             });
         }
 
-        // Extract video ID to create unique collection name
+        // Extract video ID - each video gets unique ID
         const videoId = extractVideoId(videoUrl);
         const collectionName = `ytchatbot_${videoId}`;
-        console.log('========================================');
-        console.log('Processing request for video:', videoUrl);
-        console.log('Extracted video ID:', videoId);
-        console.log('Using collection name:', collectionName);
-        console.log('Question:', question);
-        console.log('========================================');
-
-        console.log('Fetching transcript for:', videoUrl);
-        const transcript = await fetchTranscript(videoUrl, { lang: 'en' });
         
-        if (!transcript || transcript.length === 0) {
-            return res.status(400).json({ 
-                error: 'Could not fetch transcript for this video. Please check if the video has captions enabled.' 
-            });
-        }
+        console.log('Video ID:', videoId, '| Collection:', collectionName);
 
-        console.log('Creating Chroma client...');
+        // Create Chroma client
         const client = new CloudClient({
             apiKey: process.env.chroma,
             tenant: process.env.tenant,
             database: 'langchain',
         });
 
-        // Delete existing collection if it exists to ensure fresh data
-        // This prevents mixing transcripts from different videos
-        try {
-            console.log('Checking if collection exists:', collectionName);
-            const collections = await client.listCollections();
-            const collectionExists = collections.some((col: any) => col.name === collectionName);
-            
-            if (collectionExists) {
-                console.log('Deleting existing collection to ensure fresh transcript:', collectionName);
-                await client.deleteCollection({ name: collectionName });
-                // Small delay to ensure deletion is complete
-                await new Promise(resolve => setTimeout(resolve, 500));
-                console.log('Collection deleted successfully, ready for fresh data');
-            } else {
-                console.log('Collection does not exist, will create new one');
-            }
-        } catch (deleteError: any) {
-            // If collection doesn't exist or delete fails, log but continue
-            console.log('Collection check/delete note:', deleteError?.message || 'Collection may not exist (this is okay)');
-        }
-
-        const fullText = transcript.map(item => item.text).join(' ');
-
-        console.log('Splitting text into chunks...');
-        const textSplitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
-        const chunks = await textSplitter.splitText(fullText);
-        
-        console.log('Creating embeddings...');
         const embeddings = new GoogleGenerativeAIEmbeddings({
             apiKey: process.env.GOOGLE_API_KEY,
             model: "models/text-embedding-004",
             taskType: TaskType.RETRIEVAL_DOCUMENT,
         });
-        
-        console.log('Creating fresh vector store with collection:', collectionName);
-        // Create a fresh collection for this video
-        const vectorStore = await Chroma.fromTexts(
-            chunks,
-            chunks.map((_, i) => ({ source: "youtube", chunkIndex: i, videoId: videoId })),
-            embeddings,
-            {
-                collectionName: collectionName,
-                index: client as any, 
+
+        // Check if collection exists for this video ID
+        let vectorStore;
+        try {
+            const collections = await client.listCollections();
+            const collectionExists = collections.some((col: any) => col.name === collectionName);
+            
+            if (collectionExists) {
+                // Use existing collection - for follow-up questions
+                console.log('Using existing collection for video ID:', videoId);
+                vectorStore = await Chroma.fromExistingCollection(embeddings, {
+                    collectionName: collectionName,
+                    index: client as any,
+                });
+            } else {
+                // Create new collection - first time for this video
+                console.log('Creating new collection for video ID:', videoId);
+                const transcript = await fetchTranscript(videoUrl, { lang: 'en' });
+                
+                if (!transcript || transcript.length === 0) {
+                    return res.status(400).json({ 
+                        error: 'Could not fetch transcript. Please check if the video has captions enabled.' 
+                    });
+                }
+
+                const fullText = transcript.map(item => item.text).join(' ');
+                const textSplitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
+                const chunks = await textSplitter.splitText(fullText);
+                
+                vectorStore = await Chroma.fromTexts(
+                    chunks,
+                    chunks.map((_, i) => ({ source: "youtube", chunkIndex: i, videoId: videoId })),
+                    embeddings,
+                    {
+                        collectionName: collectionName,
+                        index: client as any, 
+                    }
+                );
             }
-        );
+        } catch (error: any) {
+            console.error('Error with collection:', error);
+            throw error;
+        }
         
-        console.log('Setting up retriever and LLM...');
+        // Setup retriever and LLM
         const retriever = vectorStore.asRetriever();
         const llm = new ChatGoogleGenerativeAI({
             model: "gemini-2.5-flash",
@@ -152,10 +142,7 @@ app.post('/ytchatbot',async(req,res)=>{
         }
         
         const promptTemplate = ChatPromptTemplate.fromMessages([
-            ["system",`You are a helpful assistant.
-                Answer ONLY from the provided transcript context.
-                If the context is insufficient, just say you don't know.`
-            ],
+            ["system",`You are a helpful assistant. Answer ONLY from the provided transcript context. If the context is insufficient, just say you don't know.`],
             ["human", "Question: {question}\n\nContext:\n{context}"]
         ]);
         
@@ -178,12 +165,7 @@ app.post('/ytchatbot',async(req,res)=>{
             parser
         ]);
 
-        console.log('Invoking chain with question:', question);
-        const ans = await main_chain.invoke({
-            question: question
-        });
-        
-        console.log('Successfully generated answer');
+        const ans = await main_chain.invoke({ question: question });
         res.json(ans);
     } catch (error: any) {
         console.error('Error in /ytchatbot endpoint:', error);
