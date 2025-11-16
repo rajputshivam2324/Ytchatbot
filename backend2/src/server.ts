@@ -88,45 +88,51 @@ app.post('/ytchatbot',async(req,res)=>{
 
         // Check if collection exists for this video ID
         let vectorStore;
-        try {
-            const collections = await client.listCollections();
-            const collectionExists = collections.some((col: any) => col.name === collectionName);
-            
-            if (collectionExists) {
-                // Use existing collection - for follow-up questions
-                console.log('Using existing collection for video ID:', videoId);
+        const collections = await client.listCollections();
+        let collectionExists = collections.some((col: any) => col.name === collectionName);
+        
+        if (collectionExists) {
+            // Use existing collection - for follow-up questions
+            console.log('Using existing collection for video ID:', videoId);
+            try {
                 vectorStore = await Chroma.fromExistingCollection(embeddings, {
                     collectionName: collectionName,
                     index: client as any,
                 });
-            } else {
-                // Create new collection - first time for this video
-                console.log('Creating new collection for video ID:', videoId);
-                const transcript = await fetchTranscript(videoUrl, { lang: 'en' });
-                
-                if (!transcript || transcript.length === 0) {
-                    return res.status(400).json({ 
-                        error: 'Could not fetch transcript. Please check if the video has captions enabled.' 
-                    });
-                }
-
-                const fullText = transcript.map(item => item.text).join(' ');
-                const textSplitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
-                const chunks = await textSplitter.splitText(fullText);
-                
-                vectorStore = await Chroma.fromTexts(
-                    chunks,
-                    chunks.map((_, i) => ({ source: "youtube", chunkIndex: i, videoId: videoId })),
-                    embeddings,
-                    {
-                        collectionName: collectionName,
-                        index: client as any, 
-                    }
-                );
+            } catch (loadError: any) {
+                console.error('Error loading existing collection, will recreate:', loadError?.message);
+                // If loading fails, delete and recreate
+                try {
+                    await client.deleteCollection({ name: collectionName });
+                } catch (e) {}
+                collectionExists = false; // Force recreation
             }
-        } catch (error: any) {
-            console.error('Error with collection:', error);
-            throw error;
+        }
+        
+        if (!collectionExists || !vectorStore) {
+            // Create new collection - first time for this video
+            console.log('Creating new collection for video ID:', videoId);
+            const transcript = await fetchTranscript(videoUrl, { lang: 'en' });
+            
+            if (!transcript || transcript.length === 0) {
+                return res.status(400).json({ 
+                    error: 'Could not fetch transcript. Please check if the video has captions enabled.' 
+                });
+            }
+
+            const fullText = transcript.map(item => item.text).join(' ');
+            const textSplitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
+            const chunks = await textSplitter.splitText(fullText);
+            
+            vectorStore = await Chroma.fromTexts(
+                chunks,
+                chunks.map((_, i) => ({ source: "youtube", chunkIndex: i, videoId: videoId })),
+                embeddings,
+                {
+                    collectionName: collectionName,
+                    index: client as any, 
+                }
+            );
         }
         
         // Setup retriever and LLM
