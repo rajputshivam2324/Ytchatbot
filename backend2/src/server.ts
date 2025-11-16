@@ -57,6 +57,7 @@ class HttpError extends Error {
 
 const TRANSCRIPT_LANGUAGES = ['en', 'en-US', 'en-GB', 'en-IN', 'en-CA', 'en-AU'];
 const TRANSCRIPT_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const YOUTUBE_VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
 const COLLECTION_PREFIX = 'ytchatbot_';
 
 const buildCollectionName = (videoId: string, transcriptId: string) => `${COLLECTION_PREFIX}${videoId}_${transcriptId}`;
@@ -107,7 +108,18 @@ async function createVectorStoreForVideo({
     embeddings,
     client,
 }: CreateVectorStoreParams): Promise<Chroma> {
-    const transcript = await fetchTranscriptWithFallback(videoUrl);
+    const identifiersToTry = YOUTUBE_VIDEO_ID_PATTERN.test(videoId)
+        ? [videoId, videoUrl]
+        : [videoUrl, videoId];
+
+    let transcript = [] as Awaited<ReturnType<typeof fetchTranscriptWithFallback>>;
+
+    for (const identifier of identifiersToTry) {
+        transcript = await fetchTranscriptWithFallback(identifier);
+        if (transcript?.length) {
+            break;
+        }
+    }
 
     if (!transcript || transcript.length === 0) {
         throw new HttpError('Could not fetch transcript. Please check if the video has captions enabled.', 404);
