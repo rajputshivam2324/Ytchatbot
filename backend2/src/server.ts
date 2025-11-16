@@ -1,188 +1,184 @@
-import { fetchTranscript } from 'youtube-transcript-plus';
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import { fetchTranscript } from "youtube-transcript-plus";
+
 import { CharacterTextSplitter } from "@langchain/textsplitters";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { TaskType } from "@google/generative-ai";
-import dotenv from 'dotenv';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync } from 'fs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Load .env from backend2 directory
-// Try parent directory first (when running from src/), then try parent of parent (when running from dist/)
-const envPath1 = join(__dirname, '../.env');
-const envPath2 = join(__dirname, '../../.env');
-const envPath = existsSync(envPath1) ? envPath1 : envPath2;
-
-dotenv.config({ path: envPath });
 import { CloudClient } from "chromadb";
 import { Chroma } from "@langchain/community/vectorstores/chroma";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { ChatPromptTemplate } from "@langchain/core/prompts";
-import { StringOutputParser } from "@langchain/core/output_parsers"
-import { RunnableLambda, RunnableParallel, RunnableSequence } from '@langchain/core/runnables';
-import { Document } from "@langchain/core/documents";
 
-import express from 'express'
-import cors from 'cors'
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { existsSync } from "fs";
 
-const app= express()
-// CORS configuration - allow all origins for flexibility
-app.use(cors({
-  origin: true, // Allow all origins
-  credentials: true
-}))
-app.use(express.json({ limit: '50mb' }))
+// Determine .env path
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
+const envPath1 = join(__dirname, "../.env");
+const envPath2 = join(__dirname, "../../.env");
+const envPath = existsSync(envPath1) ? envPath1 : envPath2;
+dotenv.config({ path: envPath });
 
-// Helper function to extract video ID from YouTube URL
-function extractVideoId(url: string): string {
-    const patterns = [
-        /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
-        /youtube\.com\/watch\?.*v=([^&\n?#]+)/
-    ];
-    
-    for (const pattern of patterns) {
-        const match = url.match(pattern);
-        if (match && match[1]) {
-            return match[1];
-        }
-    }
-    
-    // If no match, create a hash from the URL
-    return Buffer.from(url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 20);
+const app = express();
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: "50mb" }));
+
+// ---------------------------------------------------------------
+// HELPER — Extract Video ID
+// ---------------------------------------------------------------
+function extractVideoId(url) {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+    /youtube\.com\/watch\?.*v=([^&\n?#]+)/
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) return match[1];
+  }
+
+  return Buffer.from(url)
+    .toString("base64")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .substring(0, 16);
 }
 
-app.post('/ytchatbot',async(req,res)=>{
-    try {
-        // Validate input
-        const videoUrl = req.body?.videoUrl;
-        const question = req.body?.question;
-        
-        if (!videoUrl || !question) {
-            return res.status(400).json({ 
-                error: 'Missing required fields: videoUrl and question are required' 
-            });
-        }
+// ---------------------------------------------------------------
+//  MAIN ENDPOINT
+// ---------------------------------------------------------------
+app.post("/ytchatbot", async (req, res) => {
+  try {
+    const { videoUrl, question, followUp } = req.body;
 
-        // Extract video ID - each video gets unique ID
-        const videoId = extractVideoId(videoUrl);
-        const collectionName = `ytchatbot_${videoId}`;
-        
-        console.log('Video ID:', videoId, '| Collection:', collectionName);
+    if (!videoUrl || !question)
+      return res.status(400).json({ error: "videoUrl and question are required" });
 
-        // Create Chroma client
-        const client = new CloudClient({
-            apiKey: process.env.chroma,
-            tenant: process.env.tenant,
-            database: 'langchain',
-        });
+    const videoId = extractVideoId(videoUrl);
+    const collectionName = `yt_${videoId}`;
 
-        const embeddings = new GoogleGenerativeAIEmbeddings({
-            apiKey: process.env.GOOGLE_API_KEY,
-            model: "models/text-embedding-004",
-            taskType: TaskType.RETRIEVAL_DOCUMENT,
-        });
+    console.log("\n🔗 Video:", videoUrl);
+    console.log("🎯 Collection:", collectionName);
+    console.log("↩ Follow-up:", followUp);
 
-        // Check if collection exists for this video ID
-        let vectorStore;
-        const collections = await client.listCollections();
-        let collectionExists = collections.some((col: any) => col.name === collectionName);
-        
-        if (collectionExists) {
-            // Use existing collection - for follow-up questions
-            console.log('Using existing collection for video ID:', videoId);
-            try {
-                vectorStore = await Chroma.fromExistingCollection(embeddings, {
-                    collectionName: collectionName,
-                    index: client as any,
-                });
-            } catch (loadError: any) {
-                console.error('Error loading existing collection, will recreate:', loadError?.message);
-                // If loading fails, delete and recreate
-                try {
-                    await client.deleteCollection({ name: collectionName });
-                } catch (e) {}
-                collectionExists = false; // Force recreation
-            }
-        }
-        
-        if (!collectionExists || !vectorStore) {
-            // Create new collection - first time for this video
-            console.log('Creating new collection for video ID:', videoId);
-            const transcript = await fetchTranscript(videoUrl, { lang: 'en' });
-            
-            if (!transcript || transcript.length === 0) {
-                return res.status(400).json({ 
-                    error: 'Could not fetch transcript. Please check if the video has captions enabled.' 
-                });
-            }
+    // -----------------------------------------------------------
+    // Chroma Setup
+    // -----------------------------------------------------------
+    const client = new CloudClient({
+      apiKey: process.env.chroma,
+      tenant: process.env.tenant,
+      database: "langchain",
+    });
 
-            const fullText = transcript.map(item => item.text).join(' ');
-            const textSplitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
-            const chunks = await textSplitter.splitText(fullText);
-            
-            vectorStore = await Chroma.fromTexts(
-                chunks,
-                chunks.map((_, i) => ({ source: "youtube", chunkIndex: i, videoId: videoId })),
-                embeddings,
-                {
-                    collectionName: collectionName,
-                    index: client as any, 
-                }
-            );
-        }
-        
-        // Setup retriever and LLM
-        const retriever = vectorStore.asRetriever();
-        const llm = new ChatGoogleGenerativeAI({
-            model: "gemini-2.5-flash",
-            apiKey: process.env.GOOGLE_API_KEY,
-            temperature: 0.7,
-        });
-        
-        const format_docs = (retrievedDocs: Document[]) => {
-            return retrievedDocs.map(doc => doc.pageContent).join("\n\n");
-        }
-        
-        const promptTemplate = ChatPromptTemplate.fromMessages([
-            ["system",`You are a helpful assistant. Answer ONLY from the provided transcript context. If the context is insufficient, just say you don't know.`],
-            ["human", "Question: {question}\n\nContext:\n{context}"]
-        ]);
-        
-        const parser = new StringOutputParser();
-        const chain1 = RunnableSequence.from([
-            RunnableLambda.from((input: {question: string}) => input.question),
-            retriever,
-            RunnableLambda.from(format_docs)
-        ]);
-        
-        const parallel_chain = RunnableParallel.from({
-            context: chain1,
-            question: RunnableLambda.from((input: {question: string}) => input.question),
-        });
+    const embeddings = new GoogleGenerativeAIEmbeddings({
+      apiKey: process.env.GOOGLE_API_KEY,
+      model: "models/text-embedding-004",
+      taskType: TaskType.RETRIEVAL_DOCUMENT,
+    });
 
-        const main_chain = RunnableSequence.from([
-            parallel_chain,
-            promptTemplate,
-            llm,
-            parser
-        ]);
+    let vectorStore;
 
-        const ans = await main_chain.invoke({ question: question });
-        res.json(ans);
-    } catch (error: any) {
-        console.error('Error in /ytchatbot endpoint:', error);
-        res.status(500).json({ 
-            error: 'Internal server error',
-            message: error?.message || 'An unexpected error occurred',
-            details: process.env.NODE_ENV === 'development' ? error?.stack : undefined
-        });
+    // -----------------------------------------------------------
+    // FOLLOW-UP ⇒ Load existing collection
+    // -----------------------------------------------------------
+    if (followUp === true) {
+      console.log("🟡 Loading existing collection (follow-up mode)");
+      vectorStore = await Chroma.fromExistingCollection(embeddings, {
+        collectionName,
+        index: client,
+      });
     }
+
+    // -----------------------------------------------------------
+    // NEW VIDEO ⇒ Delete & Recreate collection
+    // -----------------------------------------------------------
+    else {
+      console.log("🟥 NEW video → Resetting collection");
+
+      try {
+        await client.deleteCollection({ name: collectionName });
+      } catch (e) {
+        console.log("ℹ No previous collection to delete");
+      }
+
+      console.log("⏳ Fetching transcript...");
+      const transcript = await fetchTranscript(videoUrl, { lang: "en" });
+
+      if (!transcript || transcript.length === 0)
+        return res.status(400).json({
+          error: "No transcript found. Enable captions on the video.",
+        });
+
+      const fullText = transcript.map((t) => t.text).join(" ");
+
+      const splitter = new CharacterTextSplitter({
+        chunkSize: 1200,
+        chunkOverlap: 200,
+      });
+
+      const chunks = await splitter.splitText(fullText);
+
+      // Unique IDs for each chunk
+      const ids = chunks.map((_, i) => `${videoId}_${Date.now()}_${i}`);
+
+      console.log(`🧩 Creating ${chunks.length} chunks...`);
+
+      vectorStore = await Chroma.fromTexts(
+        chunks,
+        ids.map((id, i) => ({ id, videoId, index: i })),
+        embeddings,
+        { collectionName, index: client }
+      );
+
+      // Small wait = avoids “first request fail”
+      await new Promise((r) => setTimeout(r, 400));
+    }
+
+    // -----------------------------------------------------------
+    // RAG: Retriever + LLM
+    // -----------------------------------------------------------
+    const retriever = vectorStore.asRetriever();
+
+    const llm = new ChatGoogleGenerativeAI({
+      model: "gemini-2.5-flash",
+      apiKey: process.env.GOOGLE_API_KEY,
+      temperature: 0.3,
+    });
+
+    console.log("🔍 Retrieving context...");
+    const docs = await retriever.getRelevantDocuments(question);
+    const context = docs.map((d) => d.pageContent).join("\n\n");
+
+    const prompt = `
+Answer ONLY using the transcript.
+If the answer is not present, say: "Not available in transcript."
+
+QUESTION:
+${question}
+
+CONTEXT:
+${context}
+    `;
+
+    console.log("🤖 Generating answer...");
+    const answer = await llm.invoke(prompt);
+
+    return res.json({ answer });
+  } catch (err) {
+    console.error("🔥 ERROR:", err);
+    res.status(500).json({
+      error: "Internal Server Error",
+      message: err.message,
+    });
+  }
 });
+
+// ---------------------------------------------------------------
+// START SERVER
+// ---------------------------------------------------------------
 const PORT = process.env.PORT || 3005;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-})
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
