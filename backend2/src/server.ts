@@ -37,6 +37,24 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }))
 
 
+// Helper function to extract video ID from YouTube URL
+function extractVideoId(url: string): string {
+    const patterns = [
+        /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+        /youtube\.com\/watch\?.*v=([^&\n?#]+)/
+    ];
+    
+    for (const pattern of patterns) {
+        const match = url.match(pattern);
+        if (match && match[1]) {
+            return match[1];
+        }
+    }
+    
+    // If no match, create a hash from the URL
+    return Buffer.from(url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 20);
+}
+
 app.post('/ytchatbot',async(req,res)=>{
     try {
         // Validate input
@@ -48,6 +66,11 @@ app.post('/ytchatbot',async(req,res)=>{
                 error: 'Missing required fields: videoUrl and question are required' 
             });
         }
+
+        // Extract video ID to create unique collection name
+        const videoId = extractVideoId(videoUrl);
+        const collectionName = `ytchatbot_${videoId}`;
+        console.log('Using collection name:', collectionName, 'for video:', videoUrl);
 
         console.log('Fetching transcript for:', videoUrl);
         const transcript = await fetchTranscript(videoUrl, { lang: 'en' });
@@ -78,13 +101,14 @@ app.post('/ytchatbot',async(req,res)=>{
             taskType: TaskType.RETRIEVAL_DOCUMENT,
         });
         
-        console.log('Creating vector store...');
+        console.log('Creating vector store with unique collection:', collectionName);
+        // Use unique collection name per video to avoid mixing transcripts
         const vectorStore = await Chroma.fromTexts(
             chunks,
-            chunks.map((_, i) => ({ source: "youtube", chunkIndex: i })),
+            chunks.map((_, i) => ({ source: "youtube", chunkIndex: i, videoId: videoId })),
             embeddings,
             {
-                collectionName: "ytchatbot",
+                collectionName: collectionName,
                 index: client as any, 
             }
         );
