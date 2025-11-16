@@ -1,26 +1,28 @@
 import { fetchTranscript } from 'youtube-transcript-plus';
 import { CharacterTextSplitter } from "@langchain/textsplitters";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { GoogleGenerativeAI, TaskType } from "@google/generative-ai";
+import { TaskType } from "@google/generative-ai";
 import dotenv from 'dotenv';
-dotenv.config({ path: '/home/shivam/ytchatbot/backend/.env' });
+dotenv.config();
 import { CloudClient } from "chromadb";
 import { Chroma } from "@langchain/community/vectorstores/chroma";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { PromptTemplate } from "@langchain/core/prompts";
-import {
-  ChatPromptTemplate,
-  MessagesPlaceholder,
-} from "@langchain/core/prompts";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers"
-import { RunnableLambda, RunnableParallel, RunnablePassthrough,RunnableSequence } from '@langchain/core/runnables';
+import { RunnableLambda, RunnableParallel, RunnableSequence } from '@langchain/core/runnables';
 import { Document } from "@langchain/core/documents";
 
 import express from 'express'
+import cors from 'cors'
 
 const app= express()
+app.use(cors())
 app.use(express.json())
 
+// Health check endpoint for Render
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+});
 
 app.post('/ytchatbot',async(req,res)=>{
     const videoUrl= req.body.videoUrl
@@ -53,8 +55,10 @@ app.post('/ytchatbot',async(req,res)=>{
         }
     );
     const retriever = vectorStore.asRetriever();
-    const llm = new GoogleGenerativeAI({
-        model:"gemini-2.5-flash"
+    const llm = new ChatGoogleGenerativeAI({
+        model: "gemini-2.5-flash",
+        apiKey: process.env.GOOGLE_API_KEY,
+        temperature: 0.7,
     });
     const format_docs=(retrievedDocs :Document[])=>{
         return retrievedDocs.map(doc => doc.pageContent).join("\n\n");
@@ -74,7 +78,7 @@ app.post('/ytchatbot',async(req,res)=>{
     ]);
     const parallel_chain= RunnableParallel.from({
         context: chain1,
-        question: question,
+        question: RunnableLambda.from((input: {question: string}) => input.question),
     })
 
     const main_chain= RunnableSequence.from([
@@ -90,4 +94,7 @@ app.post('/ytchatbot',async(req,res)=>{
     res.json(ans)
 
 });
-app.listen(3005)
+const PORT = process.env.PORT || 3005;
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});

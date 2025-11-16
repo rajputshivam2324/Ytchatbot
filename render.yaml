@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ytchatbot-backend
+    env: node
+    buildCommand: cd backend2 && npm install
+    startCommand: cd backend2 && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: chroma
+        sync: false
+      - key: tenant
+        sync: false
+

@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc -p tsconfig.json",
+  "start": "node dist/server.js",
+  "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+  "postinstall": "npm run build"
   },
   "keywords": [],
   "author": "",
@@ -16,8 +19,10 @@
     "@langchain/google-genai": "^1.0.0",
     "@langchain/google-vertexai": "^1.0.0",
     "@langchain/mongodb": "^1.0.0",
+    "@langchain/openai": "^1.0.0",
     "@langchain/textsplitters": "^1.0.0",
     "chromadb": "^3.1.0",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "langchain": "^1.0.2",
@@ -25,6 +30,8 @@
     "youtube-transcript-plus": "^1.1.1"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.5",
     "@types/node": "^24.9.2"
   }
 }
