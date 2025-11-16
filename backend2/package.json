@@ -5,9 +5,8 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-  "start": "node dist/server.js",
-  "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-  "postinstall": "npm run build"
+    "start": "node src/server.ts",
+    "postinstall": "npm run build"
   },
   "keywords": [],
   "author": "",
