@@ -32,8 +32,16 @@ import cors from 'cors'
 const app= express()
 // CORS configuration - allow all origins for flexibility
 app.use(cors({
-  origin: true, // Allow all origins
-  credentials: true
+  origin: [
+    'https://chatifyai.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:3001',
+    /^https?:\/\/.*\.vercel\.app$/,
+    /^https?:\/\/.*\.onrender\.com$/
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }))
 app.use(express.json({ limit: '50mb' }))
 
